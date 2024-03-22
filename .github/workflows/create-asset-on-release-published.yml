@@ -1,0 +1,57 @@
+# https://help.github.com/en/categories/automating-your-workflow-with-github-actions
+
+name: "Release Asset"
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  release:
+    name: "Create release asset"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout"
+        uses: "actions/checkout@v4"
+        with:
+          token: ${{ secrets.ORGANIZATION_ADMIN_TOKEN }}
+          submodules: 'true'
+
+      - run: git log -1
+
+      - name: Dump GitHub context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: echo "$GITHUB_CONTEXT"
+
+      - name: Dump job context
+        env:
+          JOB_CONTEXT: ${{ toJson(job) }}
+        run: echo "$JOB_CONTEXT"
+
+#      - name: "Read repository information"
+#        id: repo_info
+#        run: |
+#          hash=$(git log -1 --format='%H')
+#          echo "hash=$hash" >> $GITHUB_OUTPUT
+
+#      - name: "Fix repo permissions"
+#        run: sudo chown -R $USER:$USER $GITHUB_WORKSPACE
+
+      - name: "Build project"
+        id: zip_builder
+        run: |
+          zipfilename=${{ github.event.repository.name }}-v${{ github.event.release.tag_name }}.zip
+          echo "zipfilename=$zipfilename" >> $GITHUB_OUTPUT
+          zip -v -r "$zipfilename" . -x ".git/*" -x ".github/*" -x ".gitignore" -x ".gitmodules"
+    
+      - name: "Release Asset"
+        uses: "softprops/action-gh-release@v1"
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            ${{ steps.zip_builder.outputs.zipfilename }}
+
+#      - name: "Remove Asset"
+#        run: rm -f "${{ steps.zip_builder.outputs.zipfilename }}"
