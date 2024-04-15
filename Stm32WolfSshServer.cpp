@@ -6,3 +6,7 @@
 #include "Stm32WolfSshServer.hpp"
 #include "setupNetXThread.hpp"
 
+TX_SEMAPHORE port_12_semaphore;
+
+__attribute__((section(".ccmram")))
+char sessionStack[SESSION_STACK_SIZE];

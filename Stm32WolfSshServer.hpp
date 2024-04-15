@@ -6,7 +6,6 @@
 #ifndef LIBSMART_STM32WOLFSSHSERVER_HPP
 #define LIBSMART_STM32WOLFSSHSERVER_HPP
 
-
 #include <functional>
 #include "tx_api.h"
 #include "nx_api.h"
@@ -15,6 +14,7 @@
 #include "setupNetXThread.hpp"
 #include "sshKeys.hpp"
 #include "Stm32ItmLogger.h"
+#include "Stm32WolfSshServerSessionDynamic.hpp"
 
 #define SSH_PORT                        (22)
 #define EXAMPLE_HIGHWATER_MARK          (0x3FFF8000)
@@ -22,16 +22,21 @@
 using namespace Stm32ThreadxThread;
 using namespace Stm32ThreadxThread::native;
 
-extern Debugger* DBG;
+extern Debugger *DBG;
+
+extern TX_SEMAPHORE port_12_semaphore;
+#define SESSION_STACK_SIZE (1024 * 8)
+extern char sessionStack[SESSION_STACK_SIZE];
 
 template<const std::size_t STACK_SIZE_BYTES>
 class Stm32WolfSshServer : public Stm32ThreadxThread::static_thread<STACK_SIZE_BYTES> {
 public:
     Stm32WolfSshServer(const Stm32ThreadxThread::thread::priority &prio, const char *name)
-            : static_thread<STACK_SIZE_BYTES>(&Stm32ThreadxThread::BOUNCE(Stm32WolfSshServer<STACK_SIZE_BYTES>, mainSshServerThread),
-                                              (ULONG) this,
-                                              prio,
-                                              name),
+            : static_thread<STACK_SIZE_BYTES>(
+            &Stm32ThreadxThread::BOUNCE(Stm32WolfSshServer<STACK_SIZE_BYTES>, mainSshServerThread),
+            (ULONG) this,
+            prio,
+            name),
               defaultHighwater(EXAMPLE_HIGHWATER_MARK) {
     }
 
@@ -45,9 +50,9 @@ public:
                                                   (ULONG) this, prio, name) {}
 */
 
-    [[noreturn]] VOID mainSshServerThread()
-    {
+    [[noreturn]] VOID mainSshServerThread() {
         UINT ret = NX_SUCCESS;
+        int wolfRet = WS_SUCCESS;
         bool SSH_state_changed = true;
         UINT threadCount = 0;
         int SSH_accept_status = WS_FATAL_ERROR;
@@ -56,6 +61,7 @@ public:
         word32 SSH_worker_lastChannel = 0;
         int SSH_recv_result = -1;
         uint8_t SSH_buffer[1] = {0};
+        char sem_name[] = "SSH server connection available";
 
         Debugger_log(DBG, "Stm32WolfSshServer::mainSshServerThread()");
 
@@ -82,8 +88,9 @@ public:
                     SSH_inputstring_pos = 0;
                     memset(SSH_inputstring, 0, sizeof(SSH_inputstring));
 
-                    if (wolfSSH_Init() != WS_SUCCESS) {
-                        Debugger_log(DBG, "Couldn't initialize wolfSSH.\n");
+                    wolfRet = wolfSSH_Init();
+                    if (wolfRet != WS_SUCCESS) {
+                        Debugger_log(DBG, "%lu: wolfSSH_Init() = 0x%02x", HAL_GetTick(), wolfRet);
                         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
                         SSH_state = SSH_ERROR;
                         break;
@@ -95,7 +102,8 @@ public:
 
                     ctx = wolfSSH_CTX_new(WOLFSSH_ENDPOINT_SERVER, nullptr);
                     if (ctx == nullptr) {
-                        Debugger_log(DBG, "Couldn't allocate SSH CTX data.\n");
+                        Debugger_log(DBG, "%lu: wolfSSH_CTX_new(): Can not create wolfSSH context object",
+                                     HAL_GetTick());
                         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
                         SSH_state = SSH_ERROR;
                         break;
@@ -104,25 +112,42 @@ public:
                     wolfSSH_SetUserAuth(ctx, wsUserAuth);
 //                wolfSSH_SetUserAuthResult(ctx, wsUserAuthResult);
 
-                    wolfSSH_CTX_SetBanner(ctx, serverBanner);
+                    wolfRet = wolfSSH_CTX_SetBanner(ctx, serverBanner);
+                    if (wolfRet != WS_SUCCESS) {
+                        Debugger_log(DBG, "%lu: wolfSSH_CTX_SetBanner() = 0x%02x", HAL_GetTick(), wolfRet);
+                        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
+                        SSH_state = SSH_ERROR;
+                        break;
+                    }
 
-                    wolfSSH_CTX_SetWindowPacketSize(ctx, 1024 * 4, 1024);
+                    wolfRet = wolfSSH_CTX_SetWindowPacketSize(ctx, 1024 * 4, 1024);
+                    if (wolfRet != WS_SUCCESS) {
+                        Debugger_log(DBG, "%lu: wolfSSH_CTX_SetWindowPacketSize() = 0x%02x", HAL_GetTick(), wolfRet);
+                        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
+                        SSH_state = SSH_ERROR;
+                        break;
+                    }
+
 
 //                keyLoadBuf = (byte*)WMALLOC(EXAMPLE_KEYLOAD_BUFFER_SZ, NULL, 0);
 //                bufSz = EXAMPLE_KEYLOAD_BUFFER_SZ;
 //                WMEMCPY(keyLoadBuf, (byte*)rsa_key_der_2048, sizeof_rsa_key_der_2048);
 //                bufSz = sizeof_rsa_key_der_2048;
 
-//                if ((SSH_ret=wolfSSH_CTX_UsePrivateKey_buffer(ctx, rsa_key_der_2048, sizeof_rsa_key_der_2048, WOLFSSH_FORMAT_ASN1)) < 0) {
-                    if ((SSH_ret = wolfSSH_CTX_UsePrivateKey_buffer(ctx, ecc_key_der_256, sizeof_ecc_key_der_256,
-                                                                    WOLFSSH_FORMAT_ASN1)) < 0) {
-                        Debugger_log(DBG, "Couldn't use first key buffer: %s (%i)", wolfSSH_ErrorToName(SSH_ret),
-                                     SSH_ret);
+//                    wolfRet = wolfSSH_CTX_UsePrivateKey_buffer(ctx, rsa_key_der_2048, sizeof_rsa_key_der_2048, WOLFSSH_FORMAT_ASN1)
+                    wolfRet = wolfSSH_CTX_UsePrivateKey_buffer(ctx, ecc_key_der_256, sizeof_ecc_key_der_256,
+                                                               WOLFSSH_FORMAT_ASN1);
+                    if (wolfRet != WS_SUCCESS) {
+                        Debugger_log(DBG, "%lu: wolfSSH_CTX_UsePrivateKey_buffer() = 0x%02x", HAL_GetTick(), wolfRet);
                         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
                         SSH_state = SSH_ERROR;
                         break;
                     }
 
+
+                    // Register receive and send callbacks
+                    wolfSSH_SetIORecv(ctx, ioRecv);
+                    wolfSSH_SetIOSend(ctx, ioSend);
 
                     SSH_state = SSH_SOCKET;
                     break;
@@ -135,7 +160,7 @@ public:
                                                NX_NULL, thread_1_disconnect_received);
                     if (ret != NX_SUCCESS) {
                         // No socket created
-                        Debugger_log(DBG, "ERROR: nx_tcp_socket_create(): %i", ret);
+                        Debugger_log(DBG, "%lu: nx_tcp_socket_create() = 0x%02x", HAL_GetTick(), ret);
                         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
                         SSH_state = SSH_ERROR;
                     }
@@ -151,15 +176,39 @@ public:
 
                 case SSH_LISTEN:
                     if (SSH_state_changed) Debugger_log(DBG, "SSH_LISTEN (%lu / %lu)", available, total);
+
+                    tx_semaphore_create(&port_12_semaphore, sem_name, 0);
+
                     ret = nx_tcp_server_socket_listen(&ipInstance_struct, SSH_PORT, &SSH_sock, 5,
                                                       thread_1_connect_received);
                     if (ret != NX_SUCCESS) {
-                        Debugger_log(DBG, "ERROR: lwip_listen()");
+                        Debugger_log(DBG, "%lu: nx_tcp_server_socket_listen() = 0x%02x", HAL_GetTick(), ret);
                         tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
                         SSH_state = SSH_ERROR;
                         break;
                     } else {
 
+                        // Wait for a connection
+                        tx_semaphore_get(&port_12_semaphore, TX_WAIT_FOREVER);
+
+
+
+//                        void *sessionStack = malloc(1024);
+
+                        // Create new SSH server session
+                        auto *session = new Stm32WolfSshServerSessionDynamic(sessionStack, sizeof sessionStack,
+                                                                      Stm32ThreadxThread::thread::priority(),
+                                                                      "SSH session 1");
+
+
+
+                        session->setSocket(&SSH_sock);
+                        session->setServerContext(ctx);
+                        session->createThread();
+                        session->resume();
+
+
+/*
                         threadCtx = (thread_ctx_t *) malloc(sizeof(thread_ctx_t));
                         if (threadCtx == nullptr) {
                             Debugger_log(DBG, "Couldn't allocate thread context data");
@@ -168,7 +217,9 @@ public:
                             break;
                         }
                         memset(threadCtx, 0, sizeof *threadCtx);
+*/
 
+/*
                         threadCtx->ssh = wolfSSH_new(ctx);
                         if (threadCtx->ssh == nullptr) {
                             free(threadCtx);
@@ -177,13 +228,16 @@ public:
                             SSH_state = SSH_ERROR;
                             break;
                         }
+*/
 
 //                    wolfSSH_SetUserAuthCtx(ssh, &pwMapList);
 
+/*
                         if (defaultHighwater > 0) {
                             wolfSSH_SetHighwaterCtx(threadCtx->ssh, (void *) threadCtx->ssh);
                             wolfSSH_SetHighwater(threadCtx->ssh, defaultHighwater);
                         }
+*/
 
 
                         SSH_state = SSH_IDLE;
@@ -193,22 +247,12 @@ public:
                 case SSH_IDLE:
                     if (SSH_state_changed) Debugger_log(DBG, "SSH_IDLE (%lu / %lu)", available, total);
 
-                    ret = nx_tcp_server_socket_accept(&SSH_sock, NX_WAIT_FOREVER);
+                    tx_thread_sleep(1);
+
+/*                    ret = nx_tcp_server_socket_accept(&SSH_sock, NX_WAIT_FOREVER);
                     if (ret == NX_SUCCESS) {
 
-/*
-                    if(wolfSSH_set_fd(threadCtx->ssh, (int) SSH_sock) != WS_SUCCESS) {
-                        free(threadCtx);
-                        Debugger_log(DBG, "ERROR: wolfSSH_set_fd()");
-                        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
-                        SSH_state = SSH_ERROR;
-                    }
-*/
-
-
-                        wolfSSH_SetIORecv(ctx, ioRecv);
                         wolfSSH_SetIOReadCtx(threadCtx->ssh, threadCtx);
-                        wolfSSH_SetIOSend(ctx, ioSend);
                         wolfSSH_SetIOWriteCtx(threadCtx->ssh, threadCtx);
 
                         if (wolfSSH_SetUsername(threadCtx->ssh, "admin") != WS_SUCCESS) {
@@ -225,7 +269,7 @@ public:
                         threadCtx->nonBlock = 0;
 
                         SSH_state = SSH_ACCEPT_SSH;
-                    }
+                    }*/
                     break;
 
                 case SSH_ACCEPT_SSH:
@@ -234,6 +278,7 @@ public:
                     // https://www.wolfssl.com/documentation/manuals/wolfssh/chapter13.html#wolfssh_accept
 //                server_worker(threadCtx);
 
+/*
                     SSH_accept_status = wolfSSH_accept(threadCtx->ssh);
                     if ((SSH_accept_status == WS_WANT_READ) || (SSH_accept_status == WS_WANT_WRITE)) {
                         // Call wolfSSH_accept() again
@@ -248,11 +293,14 @@ public:
                         SSH_state = SSH_ERROR;
                         break;
                     }
+*/
 
                     break;
 
                 case SSH_WORKER:
                     if (SSH_state_changed) Debugger_log(DBG, "SSH_WORKER (%lu / %lu)", available, total);
+
+/*
                     SSH_worker_status = wolfSSH_worker(threadCtx->ssh, &SSH_worker_lastChannel);
                     if (SSH_worker_status == WS_CHAN_RXD) {
                         SSH_recv_result = wolfSSH_ChannelIdRead(threadCtx->ssh, SSH_worker_lastChannel, SSH_buffer,
@@ -266,11 +314,9 @@ public:
                         } else if (SSH_recv_result == 1) {
                             if (SSH_inputstring_pos < sizeof(SSH_inputstring)) {
                                 SSH_inputstring[SSH_inputstring_pos++] = SSH_buffer[0];
-//                            Debugger_log(DBG, "%x", SSH_buffer[0]);
-//                            if (SSH_buffer[0] == 0x03) /* Ctrl-C */ SSH_state = SSH_CLOSE;
-                                if (SSH_buffer[0] == 0x04) /* Ctrl-D */ SSH_state = SSH_CLOSE;
-                                if (SSH_buffer[0] == 0x05) /* Ctrl-E */ dump_stats(threadCtx);
-                                if (SSH_buffer[0] == 0x06) /* Ctrl-F */ wolfSSH_TriggerKeyExchange(threadCtx->ssh);
+                                if (SSH_buffer[0] == 0x04) SSH_state = SSH_CLOSE; // Ctrl-D
+                                if (SSH_buffer[0] == 0x05) dump_stats(threadCtx); // Ctrl-E
+                                if (SSH_buffer[0] == 0x06) wolfSSH_TriggerKeyExchange(threadCtx->ssh); // Ctrl-F
                                 if (SSH_buffer[0] == '\r') SSH_state = SSH_RECEIVED;
                             } else {
                                 Debugger_log(DBG, "ERROR: buffer overflow");
@@ -292,11 +338,13 @@ public:
                         SSH_state = SSH_ERROR;
                         break;
                     }
+*/
                     break;
 
                 case SSH_RECEIVED: {
                     Debugger_log(DBG, "received: %s", SSH_inputstring);
 //                lwip_write(newsock, "ok\r\n", 4);
+/*
                     char message[] = "ok\r\n";
                     wolfSSH_stream_send(threadCtx->ssh, reinterpret_cast<byte *>(message), strlen(message));
                     SSH_inputstring_pos = 0;
@@ -304,6 +352,7 @@ public:
                     SSH_state = SSH_WORKER;
                     if (SSH_state_changed) Debugger_log(DBG, "SSH_RECEIVED (%lu / %lu)", available, total);
                     break;
+*/
                 }
 
                 case SSH_CLOSE:
@@ -353,6 +402,9 @@ public:
 
     static void thread_1_connect_received(NX_TCP_SOCKET *socket_ptr, UINT port) {
         Debugger_log(DBG, "thread_1_connect_received()");
+
+        // Simply set the semaphore to wake up the server thread
+        tx_semaphore_put(&port_12_semaphore);
     }
 
 
@@ -363,14 +415,15 @@ public:
 
     // wolfSSH_SetIORecv
     static int ioRecv(WOLFSSH *ssh, void *buf, word32 sz, void *pReadCtx) {
-        auto *readCtx = static_cast<thread_ctx_t *>(pReadCtx);
+        auto *readCtx = static_cast<Stm32WolfSshServerSession *>(pReadCtx);
+//        auto *readCtx = static_cast<thread_ctx_t *>(pReadCtx);
         if (readCtx == nullptr) return WS_CBIO_ERR_GENERAL;
         UINT ret = NX_SUCCESS;
         ULONG bytes_copied = 0;
 
         if (readCtx->packet == nullptr) {
             // No unfinished packet in context => read a new packet
-            ret = nx_tcp_socket_receive(readCtx->sock, &readCtx->packet, TX_WAIT_FOREVER);
+            ret = nx_tcp_socket_receive(readCtx->socket, &readCtx->packet, TX_WAIT_FOREVER);
             if (ret != NX_SUCCESS) {
                 Debugger_log(DBG, "%lu: nx_tcp_socket_receive() = 0x%02x", HAL_GetTick(), ret);
                 if (ret == NX_NO_PACKET) return 0;
@@ -416,7 +469,8 @@ public:
 
 
     static int ioSend(WOLFSSH *ssh, void *buf, word32 sz, void *pWriteCtx) {
-        auto *writeCtx = static_cast<thread_ctx_t *>(pWriteCtx);
+        auto *writeCtx = static_cast<Stm32WolfSshServerSession *>(pWriteCtx);
+//        auto *writeCtx = static_cast<thread_ctx_t *>(pWriteCtx);
         if (writeCtx == nullptr) return WS_CBIO_ERR_GENERAL;
         UINT ret = NX_SUCCESS;
         NX_PACKET *data_packet;
@@ -434,7 +488,7 @@ public:
         }
 
         // send TCP packet
-        ret = nx_tcp_socket_send(writeCtx->sock, data_packet, TX_WAIT_FOREVER);
+        ret = nx_tcp_socket_send(writeCtx->socket, data_packet, TX_WAIT_FOREVER);
         if (ret == NX_SUCCESS) {
             return sz;
         }
