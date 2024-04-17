@@ -44,9 +44,18 @@ public:
                                                                                (ULONG) this, prio, name) {};
 
 
+    virtual ~Stm32WolfSshServerSessionDynamic() {
+        if (wolfSession != nullptr) Stm32WolfSshServerSessionDynamic::closeSession();
+    }
+
     void closeSession() override {
         Stm32WolfSshServerSession::closeSession();
         this->terminate();
+    }
+
+
+    uint16_t getThreadId() override {
+        return getId();
     }
 
 private:

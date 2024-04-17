@@ -8,6 +8,9 @@
 
 #define EXAMPLE_HIGHWATER_MARK          (0x3FFF8000)
 
+#define max(a, b) ((a)>(b)?(a):(b))
+
+
 //#include <functional>
 //#include "tx_api.h"
 #include "nx_api.h"
@@ -24,7 +27,7 @@ class Stm32WolfSshServerSession {
 public:
     Stm32WolfSshServerSession() {};
 
-    [[noreturn]] virtual VOID sshServerSessionThread() {
+    virtual VOID sshServerSessionThread() {
         UINT retNetx = NX_SUCCESS;
         int retWolf = WS_SUCCESS;
 
@@ -66,59 +69,89 @@ public:
         retWolf = WS_SUCCESS;
         do {
 //            if (retWolf != WS_SUCCESS) tx_thread_relinquish();
-//            if (retWolf != WS_SUCCESS) tx_thread_sleep(1);
-            tx_thread_sleep(1);
+            if (retWolf != WS_SUCCESS) tx_thread_sleep(1);
+//            tx_thread_sleep(1);
             retWolf = wolfSSH_accept(wolfSession);
+            if((retWolf == WS_FATAL_ERROR) && !ioRecvBlock) {
+                retWolf=wolfSSH_get_error(wolfSession);
+            }
         } while (retWolf == WS_WANT_READ || retWolf == WS_WANT_WRITE);
         if (retWolf != WS_SUCCESS) {
             Debugger_log(DBG, "%lu: wolfSSH_accept() = %d (%s)", HAL_GetTick(), retWolf, wolfSSH_ErrorToName(retWolf) );
-            errorHandler();
+//            errorHandler();
+            assert_param(retWolf == WS_SUCCESS);
+//            NX_ASSERT(retWolf == WS_SUCCESS)
         }
-
 
         word32 SSH_worker_lastChannel = 0;
-        uint8_t SSH_buffer[1];
+//        uint8_t SSH_buffer[10];
 
-        for (;;) {
-            retWolf = wolfSSH_worker(wolfSession, &SSH_worker_lastChannel);
-            if (retWolf == WS_CHAN_RXD) {
-                int SSH_recv_result = wolfSSH_ChannelIdRead(wolfSession, SSH_worker_lastChannel, SSH_buffer,
-                                                            sizeof(SSH_buffer));
-                if (SSH_recv_result < 0) {
-                    Debugger_log(DBG, "%lu: wolfSSH_ChannelIdRead() = 0x%02x", HAL_GetTick(), SSH_recv_result);
-                    errorHandler();
-                } else if (SSH_recv_result == 1) {
-                    if (SSH_inputstring_pos < sizeof(SSH_inputstring)) {
-                        SSH_inputstring[SSH_inputstring_pos++] = SSH_buffer[0];
-                        if (SSH_buffer[0] == 0x04) /* Ctrl-D */ closeSession();
-//                    if (SSH_buffer[0] == 0x05) /* Ctrl-E */ dump_stats(wolfContext);
-                        if (SSH_buffer[0] == 0x06) /* Ctrl-F */ wolfSSH_TriggerKeyExchange(wolfSession);
-                        if (SSH_buffer[0] == '\r') received();
-                    } else {
-                        Debugger_log(DBG, "%lu: ERROR: buffer overflow", HAL_GetTick());
-                        errorHandler();
+
+
+        for(;;) {
+            if(!ioRecvBlock || !ioSendBlock) tx_thread_sleep(1);
+
+            // Write data from SSH_outputstring to wolfSSH stream
+            if((SSH_outputstring_wr_pos - SSH_outputstring_rd_pos) > 0) {
+                retWolf = wolfSSH_stream_send(wolfSession, &SSH_outputstring[SSH_outputstring_rd_pos], SSH_outputstring_wr_pos - SSH_outputstring_rd_pos);
+                if(retWolf > 0) {
+                    SSH_outputstring_rd_pos += retWolf;
+                    if(SSH_outputstring_wr_pos == SSH_outputstring_rd_pos) {
+                        SSH_outputstring_wr_pos = SSH_outputstring_rd_pos = 0;
+                        memset(SSH_outputstring, 0, sizeof SSH_outputstring);
                     }
-                } else if (SSH_recv_result > 1) {
-                    Debugger_log(DBG, "%lu: ERROR: NOT SUPPORTED", HAL_GetTick());
-                    errorHandler();
+                }
+                // We do not care about errors here, because wolfSSH_stream_read will handle them
+            }
+
+            // Handle session without reading, because SSH_inputstring is full
+            if(SSH_inputstring_wr_pos >= (sizeof SSH_inputstring)) {
+                Debugger_log(DBG, "%lu: SSH_inputstring buffer full", HAL_GetTick());
+                retWolf = wolfSSH_worker(wolfSession, &SSH_worker_lastChannel);
+                if(retWolf == WS_ERROR) {
+                    retWolf = wolfSSH_get_error(wolfSession);
+                }
+                if(retWolf != WS_SUCCESS) {
+                    Debugger_log(DBG, "%lu: wolfSSH_worker() = %d (%s)", HAL_GetTick(), retWolf,
+                                 wolfSSH_ErrorToName(retWolf));
                 }
 
-            } else if (retWolf == WS_SUCCESS) {
-                // Success => repeat
-            } else {
-                Debugger_log(DBG, "%lu: wolfSSH_worker() = %d (%s)", HAL_GetTick(), retWolf, wolfSSH_ErrorToName(retWolf));
-                errorHandler();
+                // Add fake return, so string will be parsed
+//                SSH_inputstring[sizeof SSH_inputstring - 1] = '\r';
+//                received();
+                continue;
             }
-        }
 
+            // Read data from woldSSH stream into SSH_inputstring
+            retWolf = wolfSSH_stream_read(wolfSession, &SSH_inputstring[SSH_inputstring_wr_pos],
+                                              sizeof SSH_inputstring - SSH_inputstring_wr_pos);
+            if(retWolf >= 0) {
+                // OK, read data
+                SSH_inputstring_wr_pos+=retWolf;
+                if(SSH_inputstring_wr_pos >= (sizeof SSH_inputstring)) {
+                    SSH_inputstring[sizeof SSH_inputstring - 1] = '\r';
+                }
+                received();
+                continue;
+            } else if (retWolf == WS_EOF) {
+                // End session
+                closeSession();
+                break;
+            } else if (retWolf == WS_REKEYING) {
+                continue;
+            } else if (retWolf == WS_FATAL_ERROR) {
+                retWolf = wolfSSH_get_error(wolfSession);
+            }
+
+            if(!ioRecvBlock && retWolf == WS_WANT_READ) continue;
+            if(!ioSendBlock && retWolf == WS_WANT_WRITE) continue;
+
+            Debugger_log(DBG, "%lu: wolfSSH_stream_read() = %d (%s)", HAL_GetTick(), retWolf, wolfSSH_ErrorToName(retWolf));
+            closeSession();
+            break;
+        }
 
         errorHandler();
-    }
-
-    [[noreturn]] virtual VOID errorHandler() {
-        for (;;) {
-            tx_thread_sleep(1);
-        }
     }
 
 
@@ -127,18 +160,62 @@ public:
         wolfSSH_stream_exit(wolfSession, 0);
         nx_tcp_socket_disconnect(socket, NX_WAIT_FOREVER);
         nx_tcp_server_socket_unaccept(socket);
-//        nx_tcp_server_socket_relisten(&ipInstance_struct, SSH_PORT, threadCtx->sock);
         wolfSSH_free(wolfSession);
         wolfSession = nullptr;
     }
 
 
     virtual void received() {
-        Debugger_log(DBG, "%lu: received: %s", HAL_GetTick(), SSH_inputstring);
-        char message[] = "ok\r\n";
-        wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(message), strlen(message));
-        SSH_inputstring_pos = 0;
-        memset(SSH_inputstring, 0, sizeof(SSH_inputstring));
+        Debugger_log(DBG, "%lu: unparsed buffer: '%.*s'", HAL_GetTick(), SSH_inputstring_wr_pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
+        Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_rd_pos=%3d  |  SSH_inputstring_wr_pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_rd_pos, SSH_inputstring_wr_pos);
+
+        for (uint16_t pos=SSH_inputstring_rd_pos; pos < SSH_inputstring_wr_pos; pos++) {
+            switch(SSH_inputstring[pos]) {
+                case 0x04: // Ctrl-D
+                    SSH_inputstring_rd_pos_parsed = pos + 1;
+                    closeSession();
+                    break;
+
+                case 0x05: // Ctrl-E
+                    SSH_inputstring_rd_pos_parsed = pos + 1;
+                    dump_stats();
+                    break;
+
+                case 0x06: // Ctrl-F
+                    SSH_inputstring_rd_pos_parsed = pos + 1;
+                    wolfSSH_TriggerKeyExchange(wolfSession);
+                    break;
+
+                case '\r': // Enter
+                {
+                    Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_wr_pos=%3d  |  pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_wr_pos, pos);
+//                    wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(&SSH_inputstring[SSH_inputstring_rd_pos_parsed]), pos - SSH_inputstring_rd_pos_parsed);
+                    Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
+                    SSH_inputstring_rd_pos_parsed = pos + 1;
+                    break;
+                }
+
+                default:
+                    break;
+            }
+
+            // Echo
+            if(SSH_inputstring[pos] == '\r') {
+                appendOutputString("\r\n");
+            }
+            if(SSH_inputstring[pos] >= 32) {
+                appendOutputString(reinterpret_cast<byte *>(&SSH_inputstring[pos]), pos + 1 - SSH_inputstring_rd_pos);
+            }
+            SSH_inputstring_rd_pos = pos + 1;
+        }
+
+
+        if(SSH_inputstring_rd_pos_parsed == SSH_inputstring_wr_pos) {
+            Debugger_log(DBG, "%lu: Clearing SSH_inputstring", HAL_GetTick());
+            SSH_inputstring_rd_pos_parsed = SSH_inputstring_rd_pos = SSH_inputstring_wr_pos = 0;
+            memset(SSH_inputstring, 0, sizeof(SSH_inputstring));
+        }
+
     }
 
     virtual void setServerContext(WOLFSSH_CTX *serverCtx) {
@@ -149,6 +226,35 @@ public:
         socket = sock;
     }
 
+    virtual uint16_t getThreadId() = 0;
+
+
+    virtual void appendOutputString(const uint8_t *buffer, size_t size) {
+        if(SSH_outputstring_wr_pos + size > sizeof SSH_outputstring) {
+            Debugger_log(DBG, "%lu: appendOutputString() Buffer overflow", HAL_GetTick());
+            return;
+        }
+        memcpy(reinterpret_cast<void *>(&SSH_outputstring[SSH_outputstring_wr_pos]), buffer, size);
+        SSH_outputstring_wr_pos += size;
+    }
+
+    virtual void appendOutputString(const char *str) {
+        if(SSH_outputstring_wr_pos + strlen(str) > sizeof SSH_outputstring) {
+            Debugger_log(DBG, "%lu: appendOutputString() Buffer overflow", HAL_GetTick());
+            return;
+        }
+        strcpy(reinterpret_cast<char *>(&SSH_outputstring[SSH_outputstring_wr_pos]), str);
+        SSH_outputstring_wr_pos += strlen(str);
+    }
+
+    virtual void appendOutputString(const char ch) {
+        if(SSH_outputstring_wr_pos + 1 > sizeof SSH_outputstring) {
+            Debugger_log(DBG, "%lu: appendOutputString() Buffer overflow", HAL_GetTick());
+            return;
+        }
+        SSH_outputstring[SSH_outputstring_wr_pos] = ch;
+        SSH_outputstring_wr_pos++;
+    }
 
 public:
     NX_TCP_SOCKET *socket;
@@ -156,16 +262,50 @@ public:
     NX_PACKET *packet{};
     ULONG packet_length{};
     ULONG packet_offset{};
+    bool ioRecvBlock=false;
+    bool ioSendBlock=false;
 
 protected:
     WOLFSSH_CTX *wolfContext;
     WOLFSSH *wolfSession{};
 
+    uint8_t SSH_outputstring[256] = {0};
+    uint16_t SSH_outputstring_wr_pos = 0;
+    uint16_t SSH_outputstring_rd_pos = 0;
 
-    char SSH_inputstring[1024] = {0};
-    uint16_t SSH_inputstring_pos = 0;
+    uint8_t SSH_inputstring[256] = {0};
+    uint16_t SSH_inputstring_wr_pos = 0;
+    uint16_t SSH_inputstring_rd_pos = 0;
+    uint16_t SSH_inputstring_rd_pos_parsed = 0;
 
     word32 defaultHighwater = EXAMPLE_HIGHWATER_MARK;
+
+
+    [[noreturn]] virtual VOID errorHandler() {
+        for (;;) {
+            tx_thread_sleep(1);
+        }
+    }
+
+    int dump_stats() {
+        Debugger_log(DBG, "dump_stats(...)");
+        char stats[1024];
+        word32 statsSz;
+        word32 txCount, rxCount, seq, peerSeq;
+
+        wolfSSH_GetStats(wolfSession, &txCount, &rxCount, &seq, &peerSeq);
+
+        WSNPRINTF(stats, sizeof(stats),
+                  "Statistics for Thread #%u:\r\n"
+                  "  txCount = %u\r\n  rxCount = %u\r\n"
+                  "  seq = %u\r\n  peerSeq = %u\r\n",
+                  this->getThreadId(), txCount, rxCount, seq, peerSeq);
+        statsSz = (word32) strlen(stats);
+
+        fprintf(stderr, "%s", stats);
+        return wolfSSH_stream_send(wolfSession, (byte *) stats, statsSz);
+    }
+
 };
 
 
