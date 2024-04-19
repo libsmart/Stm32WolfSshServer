@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-#ifndef LIBSMART_STM32WOLFSSHSERVERSESSION_HPP
-#define LIBSMART_STM32WOLFSSHSERVERSESSION_HPP
+#ifndef LIBSMART_STM32WOLFSSHSERVER_STM32WOLFSSHSERVERSESSION_HPP
+#define LIBSMART_STM32WOLFSSHSERVER_STM32WOLFSSHSERVERSESSION_HPP
 
 #define EXAMPLE_HIGHWATER_MARK          (0x3FFF8000)
 
@@ -17,6 +17,7 @@
 #include <wolfssh/ssh.h>
 #include "Stm32ThreadxThread.hpp"
 #include "Stm32ItmLogger.h"
+#include "Stm32GcodeRunner.hpp"
 
 using namespace Stm32ThreadxThread;
 using namespace Stm32ThreadxThread::native;
@@ -191,6 +192,9 @@ public:
                     Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_wr_pos=%3d  |  pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_wr_pos, pos);
 //                    wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(&SSH_inputstring[SSH_inputstring_rd_pos_parsed]), pos - SSH_inputstring_rd_pos_parsed);
                     Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
+                    Stm32GcodeRunner::parser.parseString(
+                            reinterpret_cast<const char *>(SSH_inputstring + SSH_inputstring_rd_pos_parsed),
+                            pos - SSH_inputstring_rd_pos_parsed);
                     SSH_inputstring_rd_pos_parsed = pos + 1;
                     break;
                 }
@@ -289,7 +293,7 @@ protected:
 
     int dump_stats() {
         Debugger_log(DBG, "dump_stats(...)");
-        char stats[1024];
+        char stats[128];
         word32 statsSz;
         word32 txCount, rxCount, seq, peerSeq;
 
@@ -309,4 +313,4 @@ protected:
 };
 
 
-#endif //LIBSMART_STM32WOLFSSHSERVERSESSION_HPP
+#endif //LIBSMART_STM32WOLFSSHSERVER_STM32WOLFSSHSERVERSESSION_HPP
