@@ -8,9 +8,6 @@
 
 #define EXAMPLE_HIGHWATER_MARK          (0x3FFF8000)
 
-#define max(a, b) ((a)>(b)?(a):(b))
-
-
 //#include <functional>
 //#include "tx_api.h"
 #include "nx_api.h"
@@ -18,6 +15,8 @@
 #include "Stm32ThreadxThread.hpp"
 #include "Stm32ItmLogger.h"
 #include "Stm32GcodeRunner.hpp"
+
+#define max(a, b) ((a)>(b)?(a):(b))
 
 using namespace Stm32ThreadxThread;
 using namespace Stm32ThreadxThread::native;
@@ -91,6 +90,19 @@ public:
 
         for(;;) {
             if(!ioRecvBlock || !ioSendBlock) tx_thread_sleep(1);
+
+            // Read data from command context for output
+            if(cmdCtx.outputLength() > 0) {
+                if(SSH_outputstring_wr_pos + cmdCtx.outputLength() <= sizeof SSH_outputstring) {
+                    size_t sz = sizeof SSH_outputstring - SSH_outputstring_wr_pos;
+                    auto result = cmdCtx.outputRead(reinterpret_cast<char *>(&SSH_outputstring[SSH_outputstring_wr_pos]),
+                                                sz);
+                    SSH_outputstring_wr_pos += result;
+                }
+            }
+
+            // Recycle command context, if command is finished
+            if(cmdCtx.isFinished()) cmdCtx.recycle();
 
             // Write data from SSH_outputstring to wolfSSH stream
             if((SSH_outputstring_wr_pos - SSH_outputstring_rd_pos) > 0) {
@@ -193,6 +205,7 @@ public:
 //                    wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(&SSH_inputstring[SSH_inputstring_rd_pos_parsed]), pos - SSH_inputstring_rd_pos_parsed);
                     Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
                     Stm32GcodeRunner::parser.parseString(
+                            &cmdCtx,
                             reinterpret_cast<const char *>(SSH_inputstring + SSH_inputstring_rd_pos_parsed),
                             pos - SSH_inputstring_rd_pos_parsed);
                     SSH_inputstring_rd_pos_parsed = pos + 1;
@@ -238,6 +251,7 @@ public:
             Debugger_log(DBG, "%lu: appendOutputString() Buffer overflow", HAL_GetTick());
             return;
         }
+        // TODO: This is dangerous
         memcpy(reinterpret_cast<void *>(&SSH_outputstring[SSH_outputstring_wr_pos]), buffer, size);
         SSH_outputstring_wr_pos += size;
     }
@@ -309,6 +323,9 @@ protected:
         fprintf(stderr, "%s", stats);
         return wolfSSH_stream_send(wolfSession, (byte *) stats, statsSz);
     }
+
+private:
+    Stm32GcodeRunner::CommandContext cmdCtx;
 
 };
 
