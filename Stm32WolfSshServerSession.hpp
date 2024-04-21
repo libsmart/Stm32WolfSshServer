@@ -91,18 +91,20 @@ public:
         for(;;) {
             if(!ioRecvBlock || !ioSendBlock) tx_thread_sleep(1);
 
-            // Read data from command context for output
-            if(cmdCtx.outputLength() > 0) {
-                if(SSH_outputstring_wr_pos + cmdCtx.outputLength() <= sizeof SSH_outputstring) {
-                    size_t sz = sizeof SSH_outputstring - SSH_outputstring_wr_pos;
-                    auto result = cmdCtx.outputRead(reinterpret_cast<char *>(&SSH_outputstring[SSH_outputstring_wr_pos]),
-                                                sz);
-                    SSH_outputstring_wr_pos += result;
+            Stm32GcodeRunner::CommandContext *cmdCtx{};
+            while ((cmdCtx = Stm32GcodeRunner::worker->getNextCommandContext(cmdCtx)) != nullptr) {
+                if(cmdCtx->outputLength() > 0) {
+                    if(SSH_outputstring_wr_pos + cmdCtx->outputLength() <= sizeof SSH_outputstring) {
+                        size_t sz = sizeof SSH_outputstring - SSH_outputstring_wr_pos;
+                        auto result = cmdCtx->outputRead(reinterpret_cast<char *>(&SSH_outputstring[SSH_outputstring_wr_pos]),
+                                                        sz);
+                        SSH_outputstring_wr_pos += result;
+                    }
                 }
-            }
 
-            // Recycle command context, if command is finished
-            if(cmdCtx.isFinished()) cmdCtx.recycle();
+                // Recycle command context, if command is finished
+                if(cmdCtx->isFinished()) Stm32GcodeRunner::worker->deleteCommandContext(cmdCtx);
+            }
 
             // Write data from SSH_outputstring to wolfSSH stream
             if((SSH_outputstring_wr_pos - SSH_outputstring_rd_pos) > 0) {
@@ -204,11 +206,20 @@ public:
                     Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_wr_pos=%3d  |  pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_wr_pos, pos);
 //                    wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(&SSH_inputstring[SSH_inputstring_rd_pos_parsed]), pos - SSH_inputstring_rd_pos_parsed);
                     Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
-                    Stm32GcodeRunner::parser.parseString(
-                            &cmdCtx,
+
+                    Stm32GcodeRunner::AbstractCommand *cmd{};
+                    auto ret = Stm32GcodeRunner::parser.parseString(
+                            cmd,
                             reinterpret_cast<const char *>(SSH_inputstring + SSH_inputstring_rd_pos_parsed),
                             pos - SSH_inputstring_rd_pos_parsed);
                     SSH_inputstring_rd_pos_parsed = pos + 1;
+                    if (ret == Stm32GcodeRunner::Parser::parserReturn::OK) {
+                        Debugger_log(DBG, "Found command: %s", cmd->getName());
+                        Stm32GcodeRunner::CommandContext *cmdCtx{};
+                        Stm32GcodeRunner::worker->createCommandContext(cmdCtx, cmd);
+                    } else {
+                        appendOutputString("ERROR: UNKNOWN COMMAND\r\n");
+                    }
                     break;
                 }
 
@@ -325,7 +336,7 @@ protected:
     }
 
 private:
-    Stm32GcodeRunner::CommandContext cmdCtx;
+//    Stm32GcodeRunner::CommandContext cmdCtx;
 
 };
 
