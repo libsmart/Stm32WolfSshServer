@@ -181,10 +181,19 @@ public:
 
 
     virtual void received() {
-        Debugger_log(DBG, "%lu: unparsed buffer: '%.*s'", HAL_GetTick(), SSH_inputstring_wr_pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
-        Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_rd_pos=%3d  |  SSH_inputstring_wr_pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_rd_pos, SSH_inputstring_wr_pos);
+//        Debugger_log(DBG, "%lu: unparsed buffer: '%.*s'", HAL_GetTick(), SSH_inputstring_wr_pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
+//        Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_rd_pos=%3d  |  SSH_inputstring_wr_pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_rd_pos, SSH_inputstring_wr_pos);
 
         for (uint16_t pos=SSH_inputstring_rd_pos; pos < SSH_inputstring_wr_pos; pos++) {
+
+            // Echo
+            if(SSH_inputstring[pos] == '\r') {
+                appendOutputString("\r\n");
+            }
+            if(SSH_inputstring[pos] >= 32) {
+                appendOutputString(reinterpret_cast<byte *>(&SSH_inputstring[pos]), pos + 1 - SSH_inputstring_rd_pos);
+            }
+
             switch(SSH_inputstring[pos]) {
                 case 0x04: // Ctrl-D
                     SSH_inputstring_rd_pos_parsed = pos + 1;
@@ -203,9 +212,8 @@ public:
 
                 case '\r': // Enter
                 {
-                    Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_wr_pos=%3d  |  pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_wr_pos, pos);
-//                    wolfSSH_stream_send(wolfSession, reinterpret_cast<byte *>(&SSH_inputstring[SSH_inputstring_rd_pos_parsed]), pos - SSH_inputstring_rd_pos_parsed);
-                    Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
+//                    Debugger_log(DBG, "%lu: SSH_inputstring_rd_pos_parsed=%3d  |  SSH_inputstring_wr_pos=%3d  |  pos=%3d", HAL_GetTick(), SSH_inputstring_rd_pos_parsed, SSH_inputstring_wr_pos, pos);
+//                    Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
 
                     Stm32GcodeRunner::AbstractCommand *cmd{};
                     auto ret = Stm32GcodeRunner::parser.parseString(
@@ -227,13 +235,6 @@ public:
                     break;
             }
 
-            // Echo
-            if(SSH_inputstring[pos] == '\r') {
-                appendOutputString("\r\n");
-            }
-            if(SSH_inputstring[pos] >= 32) {
-                appendOutputString(reinterpret_cast<byte *>(&SSH_inputstring[pos]), pos + 1 - SSH_inputstring_rd_pos);
-            }
             SSH_inputstring_rd_pos = pos + 1;
         }
 
