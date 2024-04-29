@@ -216,7 +216,7 @@ public:
 //                    Debugger_log(DBG, "%lu: parse: '%.*s'", HAL_GetTick(), pos - SSH_inputstring_rd_pos_parsed, SSH_inputstring + SSH_inputstring_rd_pos_parsed);
 
                     Stm32GcodeRunner::AbstractCommand *cmd{};
-                    auto ret = Stm32GcodeRunner::parser.parseString(
+                    auto ret = Stm32GcodeRunner::parser->parseString(
                             cmd,
                             reinterpret_cast<const char *>(SSH_inputstring + SSH_inputstring_rd_pos_parsed),
                             pos - SSH_inputstring_rd_pos_parsed);
