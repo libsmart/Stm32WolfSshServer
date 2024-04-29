@@ -8,5 +8,5 @@
 
 TX_SEMAPHORE port_12_semaphore;
 
-__attribute__((section(".ccmram")))
-char sessionStack[SESSION_STACK_SIZE];
+// __attribute__((section(".ccmram")))
+// char sessionStack[SESSION_STACK_SIZE];
