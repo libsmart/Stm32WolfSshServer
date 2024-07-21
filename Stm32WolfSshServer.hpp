@@ -12,17 +12,17 @@
 #include <wolfssh/ssh.h>
 
 #include "Helper.hpp"
-#include "Stm32ThreadxThread.hpp"
-#include "setupNetXThread.hpp"
+#include "Stm32ThreadX.hpp"
 #include "sshKeys.hpp"
-#include "Stm32ItmLogger.h"
+#include "Stm32ItmLogger.hpp"
+#include "Stm32NetX.hpp"
 #include "Stm32WolfSshServerSessionDynamic.hpp"
 
 #define SSH_PORT                        (22)
 #define EXAMPLE_HIGHWATER_MARK          (0x3FFF8000)
 
-using namespace Stm32ThreadxThread;
-using namespace Stm32ThreadxThread::native;
+using namespace Stm32ThreadX;
+using namespace Stm32ThreadX::native;
 
 extern Debugger *DBG;
 
@@ -31,11 +31,11 @@ extern TX_SEMAPHORE port_12_semaphore;
 // extern char sessionStack[SESSION_STACK_SIZE];
 
 template<const std::size_t STACK_SIZE_BYTES>
-class Stm32WolfSshServer : public Stm32ThreadxThread::static_thread<STACK_SIZE_BYTES> {
+class Stm32WolfSshServer : public Stm32ThreadX::StaticThread<STACK_SIZE_BYTES> {
 public:
-    Stm32WolfSshServer(const Stm32ThreadxThread::thread::priority &prio, const char *name)
-        : static_thread<STACK_SIZE_BYTES>(
-            &Stm32ThreadxThread::BOUNCE(Stm32WolfSshServer<STACK_SIZE_BYTES>, mainSshServerThread),
+    Stm32WolfSshServer(const Stm32ThreadX::Thread::priority &prio, const char *name)
+        : StaticThread<STACK_SIZE_BYTES>(
+            &Stm32ThreadX::BOUNCE(Stm32WolfSshServer<STACK_SIZE_BYTES>, mainSshServerThread),
             (ULONG) this,
             prio,
             name) {
@@ -59,13 +59,15 @@ public:
         Stm32WolfSshServerSessionDynamic *session = nullptr;
 
 
-        Debugger_log(DBG, "Stm32WolfSshServer::mainSshServerThread()");
+        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND * 10);
+
+        Logger.printf("Stm32WolfSshServer::mainSshServerThread()\r\n");
 
 
         // Initialize wolfSSH
         wolfRet = wolfSSH_Init();
         if (wolfRet != WS_SUCCESS) {
-            Debugger_log(DBG, "%lu: wolfSSH_Init() = 0x%02x", HAL_GetTick(), wolfRet);
+            Logger.printf("%lu: wolfSSH_Init() = 0x%02x\r\n", HAL_GetTick(), wolfRet);
             errorHandler();
         }
 
@@ -76,7 +78,7 @@ public:
         // Initialize wolfSSH server context
         wolfContext = wolfSSH_CTX_new(WOLFSSH_ENDPOINT_SERVER, nullptr);
         if (wolfContext == nullptr) {
-            Debugger_log(DBG, "%lu: wolfSSH_CTX_new(): Can not create wolfSSH context object", HAL_GetTick());
+            Logger.printf("%lu: wolfSSH_CTX_new(): Can not create wolfSSH context object\r\n", HAL_GetTick());
             errorHandler();
         }
 
@@ -87,14 +89,14 @@ public:
         // Configure server banner
         wolfRet = wolfSSH_CTX_SetBanner(wolfContext, serverBanner);
         if (wolfRet != WS_SUCCESS) {
-            Debugger_log(DBG, "%lu: wolfSSH_CTX_SetBanner() = 0x%02x", HAL_GetTick(), wolfRet);
+            Logger.printf("%lu: wolfSSH_CTX_SetBanner() = 0x%02x\r\n", HAL_GetTick(), wolfRet);
             errorHandler();
         }
 
         // Configure window packet size
         wolfRet = wolfSSH_CTX_SetWindowPacketSize(wolfContext, 1024 * 4, 1024);
         if (wolfRet != WS_SUCCESS) {
-            Debugger_log(DBG, "%lu: wolfSSH_CTX_SetWindowPacketSize() = 0x%02x", HAL_GetTick(), wolfRet);
+            Logger.printf("%lu: wolfSSH_CTX_SetWindowPacketSize() = 0x%02x\r\n", HAL_GetTick(), wolfRet);
             errorHandler();
         }
 
@@ -103,7 +105,7 @@ public:
         wolfRet = wolfSSH_CTX_UsePrivateKey_buffer(wolfContext, ecc_key_der_256, sizeof_ecc_key_der_256,
                                                    WOLFSSH_FORMAT_ASN1);
         if (wolfRet != WS_SUCCESS) {
-            Debugger_log(DBG, "%lu: wolfSSH_CTX_UsePrivateKey_buffer() = 0x%02x", HAL_GetTick(), wolfRet);
+            Logger.printf("%lu: wolfSSH_CTX_UsePrivateKey_buffer() = 0x%02x\r\n", HAL_GetTick(), wolfRet);
             errorHandler();
         }
 
@@ -112,12 +114,12 @@ public:
         wolfSSH_SetIOSend(wolfContext, ioSend);
 
         // Create server socket
-        ret = nx_tcp_socket_create(&ipInstance_struct, &SSH_sock, sock_name,
+        ret = nx_tcp_socket_create(Stm32NetX::NX->getIpInstance(), &SSH_sock, sock_name,
                                    NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, 100,
                                    NX_NULL, thread_1_disconnect_received);
         if (ret != NX_SUCCESS) {
             // No socket created
-            Debugger_log(DBG, "%lu: nx_tcp_socket_create() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_tcp_socket_create() = 0x%02x\r\n", HAL_GetTick(), ret);
             errorHandler();
         }
 
@@ -125,16 +127,16 @@ public:
         tx_semaphore_create(&port_12_semaphore, sem_name, 0);
 
         // Listen socket
-        ret = nx_tcp_server_socket_listen(&ipInstance_struct, SSH_PORT, &SSH_sock, 5,
+        ret = nx_tcp_server_socket_listen(Stm32NetX::NX->getIpInstance(), SSH_PORT, &SSH_sock, 5,
                                           thread_1_connect_received);
         if (ret != NX_SUCCESS) {
-            Debugger_log(DBG, "%lu: nx_tcp_server_socket_listen() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_tcp_server_socket_listen() = 0x%02x\r\n", HAL_GetTick(), ret);
             errorHandler();
         }
 
 
         for (;;) {
-            Debugger_log(DBG, "%lu: SSH Server waiting for connection...", HAL_GetTick());
+            Logger.printf("%lu: SSH Server waiting for connection...\r\n", HAL_GetTick());
 
             // Wait for new connection
             tx_semaphore_get(&port_12_semaphore, TX_WAIT_FOREVER);
@@ -146,7 +148,7 @@ public:
                                    sizeof(Stm32WolfSshServerSessionDynamic),
                                    TX_NO_WAIT);
             if (ret != TX_SUCCESS) {
-                Debugger_log(DBG, "%lu: tx_byte_allocate() = 0x%02x", millis(), ret);
+                Logger.printf("%lu: tx_byte_allocate() = 0x%02x\r\n", millis(), ret);
                 assert_param(ret != TX_SUCCESS);
             }
 
@@ -156,14 +158,14 @@ public:
                                    SESSION_STACK_SIZE,
                                    TX_NO_WAIT);
             if (ret != TX_SUCCESS) {
-                Debugger_log(DBG, "%lu: tx_byte_allocate() = 0x%02x", millis(), ret);
+                Logger.printf("%lu: tx_byte_allocate() = 0x%02x\r\n", millis(), ret);
                 assert_param(ret != TX_SUCCESS);
             }
 
 
             // Create new SSH server session
             session = new(sessionObject) Stm32WolfSshServerSessionDynamic(sessionStack, SESSION_STACK_SIZE,
-                                                                          Stm32ThreadxThread::thread::priority(),
+                                                                          Stm32ThreadX::Thread::priority(),
                                                                           "SSH session 1");
 
             session->setSocket(&SSH_sock);
@@ -174,28 +176,28 @@ public:
             // Wait for socket closed
             ret = nx_tcp_socket_state_wait(&SSH_sock, NX_TCP_CLOSED, NX_WAIT_FOREVER);
             if (ret != NX_SUCCESS) {
-                Debugger_log(DBG, "%lu: nx_tcp_socket_state_wait() = 0x%02x", HAL_GetTick(), ret);
+                Logger.printf("%lu: nx_tcp_socket_state_wait() = 0x%02x\r\n", HAL_GetTick(), ret);
                 errorHandler();
             }
 
             delete session;
             ret = tx_byte_release(sessionStack);
             if (ret != TX_SUCCESS) {
-                Debugger_log(DBG, "%lu: tx_byte_allocate() = 0x%02x", millis(), ret);
+                Logger.printf("%lu: tx_byte_allocate() = 0x%02x\r\n", millis(), ret);
                 assert_param(ret != TX_SUCCESS);
             }
 
             ret = tx_byte_release(sessionObject);
             if (ret != TX_SUCCESS) {
-                Debugger_log(DBG, "%lu: tx_byte_allocate() = 0x%02x", millis(), ret);
+                Logger.printf("%lu: tx_byte_allocate() = 0x%02x\r\n", millis(), ret);
                 assert_param(ret != TX_SUCCESS);
             }
 
 
 
-            ret = nx_tcp_server_socket_relisten(&ipInstance_struct, SSH_PORT, &SSH_sock);
+            ret = nx_tcp_server_socket_relisten(Stm32NetX::NX->getIpInstance(), SSH_PORT, &SSH_sock);
             if (ret != NX_SUCCESS) {
-                Debugger_log(DBG, "%lu: nx_tcp_server_socket_relisten() = 0x%02x", HAL_GetTick(), ret);
+                Logger.printf("%lu: nx_tcp_server_socket_relisten() = 0x%02x\r\n", HAL_GetTick(), ret);
                 errorHandler();
             }
         }
@@ -204,14 +206,14 @@ public:
     static int wsUserAuth(byte authType,
                           WS_UserAuthData *authData,
                           void *ctx) {
-        Debugger_log(DBG, "wsUserAuth(...)");
+        Logger.println("wsUserAuth(...)");
         return WOLFSSH_USERAUTH_SUCCESS;
     }
 
     constexpr static const char serverBanner[] = "wolfSSH Example Server\n";
 
     static void thread_1_connect_received(NX_TCP_SOCKET *socket_ptr, UINT port) {
-        Debugger_log(DBG, "thread_1_connect_received()");
+        Logger.println("thread_1_connect_received()");
 
         // Simply set the semaphore to wake up the server thread
         tx_semaphore_put(&port_12_semaphore);
@@ -219,7 +221,7 @@ public:
 
 
     static void thread_1_disconnect_received(NX_TCP_SOCKET *socket) {
-        Debugger_log(DBG, "thread_1_disconnect_received()");
+        Logger.println("thread_1_disconnect_received()");
     }
 
 
@@ -236,7 +238,7 @@ public:
                                         readCtx->ioRecvBlock ? NX_WAIT_FOREVER : NX_NO_WAIT);
             if (ret != NX_SUCCESS) {
                 if (ret == NX_NO_PACKET) return WS_CBIO_ERR_WANT_READ;
-                Debugger_log(DBG, "%lu: nx_tcp_socket_receive() = 0x%02x", HAL_GetTick(), ret);
+                Logger.printf("%lu: nx_tcp_socket_receive() = 0x%02x\r\n", HAL_GetTick(), ret);
                 if (ret == NX_NOT_BOUND) return WS_CBIO_ERR_CONN_CLOSE;
                 if (ret == NX_WAIT_ABORTED) return WS_CBIO_ERR_WANT_READ;
                 if (ret == NX_NOT_CONNECTED) return WS_CBIO_ERR_CONN_RST;
@@ -246,7 +248,7 @@ public:
             // Get data length of packet
             ret = nx_packet_length_get(readCtx->packet, &readCtx->packet_length);
             if (ret != NX_SUCCESS) {
-                Debugger_log(DBG, "%lu: nx_packet_length_get() = 0x%02x", HAL_GetTick(), ret);
+                Logger.printf("%lu: nx_packet_length_get() = 0x%02x", HAL_GetTick(), ret);
                 return WS_CBIO_ERR_GENERAL;
             }
         }
@@ -254,7 +256,7 @@ public:
         // Transfer data from packet to the buffer
         ret = nx_packet_data_extract_offset(readCtx->packet, readCtx->packet_offset, buf, sz, &bytes_copied);
         if (ret != NX_SUCCESS) {
-            Debugger_log(DBG, "%lu: nx_packet_data_extract_offset() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_packet_data_extract_offset() = 0x%02x", HAL_GetTick(), ret);
             return WS_CBIO_ERR_GENERAL;
         }
 
@@ -267,7 +269,7 @@ public:
         // Packet completely copied => release packet and clear offset
         ret = nx_packet_release(readCtx->packet);
         if (ret != NX_SUCCESS) {
-            Debugger_log(DBG, "%lu: nx_packet_release() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_packet_release() = 0x%02x", HAL_GetTick(), ret);
             return WS_CBIO_ERR_GENERAL;
         }
         readCtx->packet = nullptr;
@@ -284,18 +286,18 @@ public:
         UINT ret = NX_SUCCESS;
         NX_PACKET *data_packet;
 
-        ret = nx_packet_allocate(&packetPool_struct, &data_packet, NX_TCP_PACKET,
+        ret = nx_packet_allocate(Stm32NetX::NX->getPacketPool(), &data_packet, NX_TCP_PACKET,
                                  writeCtx->ioSendBlock ? NX_WAIT_FOREVER : NX_NO_WAIT);
         if (ret == NX_NO_PACKET) return WS_CBIO_ERR_WANT_WRITE;
         if (ret != NX_SUCCESS) {
-            Debugger_log(DBG, "%lu: nx_packet_allocate() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_packet_allocate() = 0x%02x", HAL_GetTick(), ret);
             return WS_CBIO_ERR_GENERAL;
         }
 
-        ret = nx_packet_data_append(data_packet, buf, sz, &packetPool_struct, NX_NO_WAIT);
+        ret = nx_packet_data_append(data_packet, buf, sz, Stm32NetX::NX->getPacketPool(), NX_NO_WAIT);
         //        if (ret == NX_NO_PACKET) return WS_CBIO_ERR_WANT_WRITE;
         if (ret != NX_SUCCESS) {
-            Debugger_log(DBG, "%lu: nx_packet_data_append() = 0x%02x", HAL_GetTick(), ret);
+            Logger.printf("%lu: nx_packet_data_append() = 0x%02x", HAL_GetTick(), ret);
             return WS_CBIO_ERR_GENERAL;
         }
 
@@ -309,7 +311,7 @@ public:
         if (ret == NX_NOT_CONNECTED) return WS_CBIO_ERR_CONN_RST;
         if (ret == NX_WAIT_ABORTED) return WS_CBIO_ERR_WANT_WRITE;
 
-        Debugger_log(DBG, "%lu: nx_tcp_socket_send() = 0x%02x", HAL_GetTick(), ret);
+        Logger.printf("%lu: nx_tcp_socket_send() = 0x%02x", HAL_GetTick(), ret);
         return WS_CBIO_ERR_GENERAL;
     }
 

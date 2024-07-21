@@ -4,7 +4,6 @@
  */
 
 #include "Stm32WolfSshServer.hpp"
-#include "setupNetXThread.hpp"
 
 TX_SEMAPHORE port_12_semaphore;
 

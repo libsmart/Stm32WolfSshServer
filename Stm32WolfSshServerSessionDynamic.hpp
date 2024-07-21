@@ -13,17 +13,17 @@
 #include <wolfssh/ssh.h>
 //#include "setupNetXThread.hpp"
 
-#include "Stm32ThreadxThread.hpp"
+#include "Stm32ThreadX.hpp"
 #include "Stm32ItmLogger.h"
 #include "Stm32WolfSshServerSession.hpp"
 
-using namespace Stm32ThreadxThread;
-using namespace Stm32ThreadxThread::native;
+using namespace Stm32ThreadX;
+using namespace Stm32ThreadX::native;
 
 extern Debugger *DBG;
 
 //template<const std::size_t STACK_SIZE_BYTES>
-class Stm32WolfSshServerSessionDynamic : public Stm32WolfSshServerSession, public Stm32ThreadxThread::thread {
+class Stm32WolfSshServerSessionDynamic : public Stm32WolfSshServerSession, public Stm32ThreadX::Thread {
 public:
     /*
     Stm32WolfSshServerSession(Stm32WolfSshServer<STACK_SIZE_BYTES> *stm32WolfSshServer, void *pstack,
@@ -37,8 +37,8 @@ public:
 
     Stm32WolfSshServerSessionDynamic(void *pstack,
                                      std::uint32_t stack_size,
-                                     priority prio, const char *name) : thread(pstack, stack_size,
-                                                                               &Stm32ThreadxThread::BOUNCE(
+                                     priority prio, const char *name) : Thread(pstack, stack_size,
+                                                                               &Stm32ThreadX::BOUNCE(
                                                                                        Stm32WolfSshServerSession,
                                                                                        sshServerSessionThread),
                                                                                (ULONG) this, prio, name) {};
